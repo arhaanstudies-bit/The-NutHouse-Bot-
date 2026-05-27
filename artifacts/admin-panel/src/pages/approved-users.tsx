@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Link } from "wouter";
-import { Ban, CheckCircle, Image, ExternalLink, Loader2 } from "lucide-react";
+import { Ban, CheckCircle, Image, ExternalLink, Loader2, Shield } from "lucide-react";
 
 export default function ApprovedUsersPage() {
   const { data, isLoading } = useListApprovedUsers();
@@ -67,6 +67,12 @@ export default function ApprovedUsersPage() {
                   <TableRow key={user.id}>
                     <TableCell className="font-medium">
                       {user.firstName} {user.lastName}
+                      {user.isAdmin && (
+                        <span className="ml-2 inline-flex items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-400">
+                          <Shield className="h-3 w-3" />
+                          Admin
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {user.telegramId}

@@ -15,5 +15,6 @@ export interface PendingUser {
   /** @nullable */
   lastName?: string | null;
   mediaCount: number;
+  isAdmin?: boolean;
   submittedAt: Date;
 }

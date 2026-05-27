@@ -1,4 +1,4 @@
-import { pgTable, serial, varchar, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, serial, varchar, timestamp, pgEnum, boolean } from "drizzle-orm/pg-core";
 import { z } from "zod";
 
 export const userStatusEnum = pgEnum("user_status", ["pending", "approved", "declined", "banned"]);
@@ -10,6 +10,7 @@ export const usersTable = pgTable("users", {
   firstName: varchar("first_name", { length: 256 }).notNull(),
   lastName: varchar("last_name", { length: 256 }),
   status: userStatusEnum("status").notNull().default("pending"),
+  isAdmin: boolean("is_admin").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -20,6 +21,7 @@ export const insertUserSchema = z.object({
   firstName: z.string(),
   lastName: z.string().nullable().optional(),
   status: z.enum(["pending", "approved", "declined", "banned"]).optional(),
+  isAdmin: z.boolean().optional(),
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
