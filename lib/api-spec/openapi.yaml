@@ -1,15 +1,24 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: BR0 PR0 BOT Admin Panel API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: dashboard
+    description: Dashboard & statistics
+  - name: users
+    description: User management (pending & approved)
+  - name: media
+    description: Media submissions
+  - name: broadcasts
+    description: Broadcast history
+  - name: settings
+    description: Bot configuration
 paths:
   /healthz:
     get:
@@ -24,6 +33,217 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [dashboard]
+      summary: Dashboard statistics
+      description: Returns overview stats for the admin dashboard
+      responses:
+        "200":
+          description: Dashboard stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardStats"
+
+  /pending-users:
+    get:
+      operationId: listPendingUsers
+      tags: [users]
+      summary: List pending users
+      description: Users who submitted media but await admin approval
+      responses:
+        "200":
+          description: List of pending users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingUser"
+
+  /pending-users/{id}/approve:
+    post:
+      operationId: approveUser
+      tags: [users]
+      summary: Approve a pending user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /pending-users/{id}/decline:
+    post:
+      operationId: declineUser
+      tags: [users]
+      summary: Decline a pending user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User declined
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /approved-users:
+    get:
+      operationId: listApprovedUsers
+      tags: [users]
+      summary: List approved users
+      description: All approved/banned users
+      responses:
+        "200":
+          description: List of approved users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+
+  /approved-users/{id}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get user details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDetail"
+
+    patch:
+      operationId: updateUser
+      tags: [users]
+      summary: Update user (ban/unban)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /media:
+    get:
+      operationId: listMedia
+      tags: [media]
+      summary: List all media submissions
+      description: All photos/videos submitted by all users
+      responses:
+        "200":
+          description: List of media items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MediaItem"
+
+  /users/{id}/media:
+    get:
+      operationId: listUserMedia
+      tags: [media]
+      summary: List media for a specific user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of user's media items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MediaItem"
+
+  /broadcasts:
+    get:
+      operationId: listBroadcasts
+      tags: [broadcasts]
+      summary: List broadcast history
+      responses:
+        "200":
+          description: List of broadcasts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Broadcast"
+
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get bot settings
+      responses:
+        "200":
+          description: Bot settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+
+    post:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Update bot settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsInput"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +254,121 @@ components:
       required:
         - status
 
+    DashboardStats:
+      type: object
+      required: [totalUsers, pendingUsers, approvedUsers, bannedUsers, totalMedia, totalBroadcasts]
+      properties:
+        totalUsers: { type: integer }
+        pendingUsers: { type: integer }
+        approvedUsers: { type: integer }
+        bannedUsers: { type: integer }
+        totalMedia: { type: integer }
+        totalBroadcasts: { type: integer }
+        recentActivity:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityItem"
+
+    ActivityItem:
+      type: object
+      required: [type, message, timestamp]
+      properties:
+        type: { type: string, enum: [user_joined, user_approved, user_declined, media_submitted, broadcast_sent] }
+        message: { type: string }
+        timestamp: { type: string, format: date-time }
+        userId: { type: ["integer", "null"] }
+
+    PendingUser:
+      type: object
+      required: [id, telegramId, username, firstName, mediaCount, submittedAt]
+      properties:
+        id: { type: integer }
+        telegramId: { type: string }
+        username: { type: ["string", "null"] }
+        firstName: { type: string }
+        lastName: { type: ["string", "null"] }
+        mediaCount: { type: integer }
+        submittedAt: { type: string, format: date-time }
+
+    User:
+      type: object
+      required: [id, telegramId, firstName, status, createdAt]
+      properties:
+        id: { type: integer }
+        telegramId: { type: string }
+        username: { type: ["string", "null"] }
+        firstName: { type: string }
+        lastName: { type: ["string", "null"] }
+        status: { type: string, enum: [pending, approved, declined, banned] }
+        mediaCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    UserDetail:
+      type: object
+      required: [id, telegramId, firstName, status, createdAt]
+      properties:
+        id: { type: integer }
+        telegramId: { type: string }
+        username: { type: ["string", "null"] }
+        firstName: { type: string }
+        lastName: { type: ["string", "null"] }
+        status: { type: string, enum: [pending, approved, declined, banned] }
+        mediaCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        media:
+          type: array
+          items:
+            $ref: "#/components/schemas/MediaItem"
+
+    UserUpdate:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [approved, banned] }
+
+    MediaItem:
+      type: object
+      required: [id, userId, type, telegramFileId, createdAt]
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        type: { type: string, enum: [photo, video] }
+        telegramFileId: { type: string }
+        caption: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+
+    Broadcast:
+      type: object
+      required: [id, mediaId, sentCount, failedCount, createdAt]
+      properties:
+        id: { type: integer }
+        mediaId: { type: integer }
+        sentCount: { type: integer }
+        failedCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    Settings:
+      type: object
+      required: [id, botName, minMediaRequired, createdAt]
+      properties:
+        id: { type: integer }
+        botName: { type: string }
+        adminPassword: { type: ["string", "null"] }
+        minMediaRequired: { type: integer }
+        welcomeMessage: { type: ["string", "null"] }
+        approvalMessage: { type: ["string", "null"] }
+        declineMessage: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    SettingsInput:
+      type: object
+      properties:
+        botName: { type: string, minLength: 1 }
+        adminPassword: { type: string }
+        minMediaRequired: { type: integer, minimum: 1 }
+        welcomeMessage: { type: string }
+        approvalMessage: { type: string }
+        declineMessage: { type: string }

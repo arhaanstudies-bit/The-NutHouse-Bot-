@@ -1,8 +1,18 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
+import dashboardRouter from "./dashboard";
+import usersRouter from "./users";
+import mediaRouter from "./media";
+import broadcastsRouter from "./broadcasts";
+import settingsRouter from "./settings";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(dashboardRouter);
+router.use(usersRouter);
+router.use(mediaRouter);
+router.use(broadcastsRouter);
+router.use(settingsRouter);
 
 export default router;
