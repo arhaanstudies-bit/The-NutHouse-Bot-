@@ -7,8 +7,12 @@ import {
   Radio,
   Settings,
   Bot,
+  LogOut,
+  LogIn,
+  User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@workspace/replit-auth-web";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -21,6 +25,7 @@ const navItems = [
 
 export function Sidebar() {
   const [location] = useLocation();
+  const { isAuthenticated, user, logout, login } = useAuth();
   return (
     <aside className="fixed left-0 top-0 z-40 h-screen w-60 border-r border-sidebar-border bg-sidebar">
       <div className="flex h-full flex-col">
@@ -51,7 +56,30 @@ export function Sidebar() {
             );
           })}
         </nav>
-        <div className="border-t border-sidebar-border p-4">
+        <div className="border-t border-sidebar-border p-4 space-y-3">
+          {isAuthenticated && user ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm text-sidebar-foreground">
+                <User className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">{user.firstName || user.email}</span>
+              </div>
+              <button
+                onClick={logout}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
+              >
+                <LogOut className="h-4 w-4" />
+                Log out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={login}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent/50"
+            >
+              <LogIn className="h-4 w-4" />
+              Log in
+            </button>
+          )}
           <p className="text-xs text-muted-foreground">Admin Panel v1.0</p>
         </div>
       </div>

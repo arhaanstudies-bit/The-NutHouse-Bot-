@@ -48,6 +48,7 @@ export const ListPendingUsersResponseItem = zod.object({
   "firstName": zod.string(),
   "lastName": zod.string().nullish(),
   "mediaCount": zod.number(),
+  "isAdmin": zod.boolean().optional(),
   "submittedAt": zod.coerce.date()
 })
 export const ListPendingUsersResponse = zod.array(ListPendingUsersResponseItem)
@@ -67,6 +68,7 @@ export const ApproveUserResponse = zod.object({
   "firstName": zod.string(),
   "lastName": zod.string().nullish(),
   "status": zod.enum(['pending', 'approved', 'declined', 'banned']),
+  "isAdmin": zod.boolean().optional(),
   "mediaCount": zod.number().optional(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date().optional()
@@ -87,6 +89,7 @@ export const DeclineUserResponse = zod.object({
   "firstName": zod.string(),
   "lastName": zod.string().nullish(),
   "status": zod.enum(['pending', 'approved', 'declined', 'banned']),
+  "isAdmin": zod.boolean().optional(),
   "mediaCount": zod.number().optional(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date().optional()
@@ -104,6 +107,7 @@ export const ListApprovedUsersResponseItem = zod.object({
   "firstName": zod.string(),
   "lastName": zod.string().nullish(),
   "status": zod.enum(['pending', 'approved', 'declined', 'banned']),
+  "isAdmin": zod.boolean().optional(),
   "mediaCount": zod.number().optional(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date().optional()
@@ -125,6 +129,7 @@ export const GetUserResponse = zod.object({
   "firstName": zod.string(),
   "lastName": zod.string().nullish(),
   "status": zod.enum(['pending', 'approved', 'declined', 'banned']),
+  "isAdmin": zod.boolean().optional(),
   "mediaCount": zod.number().optional(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date().optional(),
@@ -157,6 +162,7 @@ export const UpdateUserResponse = zod.object({
   "firstName": zod.string(),
   "lastName": zod.string().nullish(),
   "status": zod.enum(['pending', 'approved', 'declined', 'banned']),
+  "isAdmin": zod.boolean().optional(),
   "mediaCount": zod.number().optional(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date().optional()
@@ -251,6 +257,85 @@ export const UpdateSettingsResponse = zod.object({
   "declineMessage": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date().optional()
+})
+
+
+/**
+ * @summary Get the currently authenticated user
+ */
+export const GetCurrentAuthUserHeader = zod.object({
+  "Authorization": zod.string().optional().describe('Opaque session token — `Bearer <sid>`.')
+})
+
+export const GetCurrentAuthUserResponse = zod.object({
+  "user": zod.union([zod.object({
+  "id": zod.string(),
+  "email": zod.string().email().nullable(),
+  "firstName": zod.string().nullable(),
+  "lastName": zod.string().nullable(),
+  "profileImageUrl": zod.string().nullable()
+}),zod.null()])
+})
+
+
+/**
+ * @summary Start the browser OIDC login flow
+ */
+export const BeginBrowserLoginQueryParams = zod.object({
+  "returnTo": zod.coerce.string().optional().describe('Relative path to redirect to after login (must start with `\/`). Defaults to `\/`.')
+})
+
+
+/**
+ * @summary Complete the browser OIDC login flow
+ */
+export const HandleBrowserLoginCallbackQueryParams = zod.object({
+  "code": zod.coerce.string().optional(),
+  "state": zod.coerce.string().optional(),
+  "iss": zod.coerce.string().url().optional()
+})
+
+
+/**
+ * @summary Clear the session and begin OIDC logout
+ */
+export const LogoutBrowserSessionHeader = zod.object({
+  "Authorization": zod.string().optional().describe('Opaque session token — `Bearer <sid>`.')
+})
+
+
+/**
+ * @summary Exchange a mobile OIDC code for a session token
+ */
+
+
+
+
+
+
+
+export const ExchangeMobileAuthorizationCodeBody = zod.object({
+  "code": zod.string().min(1),
+  "code_verifier": zod.string().min(1),
+  "redirect_uri": zod.string().url().min(1),
+  "state": zod.string().min(1),
+  "nonce": zod.string().min(1).optional()
+})
+
+export const ExchangeMobileAuthorizationCodeResponse = zod.object({
+  "token": zod.string()
+})
+
+
+/**
+ * @summary Delete a mobile session token
+ */
+export const LogoutMobileSessionHeader = zod.object({
+  "Authorization": zod.string().optional().describe('Opaque session token — `Bearer <sid>`.')
+})
+
+export const LogoutMobileSessionResponse = zod.object({
+  "success": zod.boolean()
 })
 
 
