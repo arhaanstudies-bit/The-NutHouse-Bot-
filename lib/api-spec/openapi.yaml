@@ -469,6 +469,7 @@ components:
       required: [status]
       properties:
         status: { type: string, enum: [approved, banned] }
+        isAdmin: { type: boolean }
 
     MediaItem:
       type: object

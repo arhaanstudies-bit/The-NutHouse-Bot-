@@ -152,7 +152,8 @@ export const UpdateUserParams = zod.object({
 })
 
 export const UpdateUserBody = zod.object({
-  "status": zod.enum(['approved', 'banned'])
+  "status": zod.enum(['approved', 'banned']),
+  "isAdmin": zod.boolean().optional()
 })
 
 export const UpdateUserResponse = zod.object({

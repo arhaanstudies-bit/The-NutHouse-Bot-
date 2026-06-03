@@ -9,4 +9,5 @@ import type { UserUpdateStatus } from './userUpdateStatus';
 
 export interface UserUpdate {
   status: UserUpdateStatus;
+  isAdmin?: boolean;
 }

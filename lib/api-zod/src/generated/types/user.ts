@@ -16,6 +16,7 @@ export interface User {
   /** @nullable */
   lastName?: string | null;
   status: UserStatus;
+  isAdmin?: boolean;
   mediaCount?: number;
   createdAt: Date;
   updatedAt?: Date;

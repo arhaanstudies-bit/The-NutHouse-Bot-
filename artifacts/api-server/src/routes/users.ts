@@ -154,7 +154,7 @@ router.get("/approved-users/:id", async (req, res) => {
   }
 });
 
-// Update user status (ban/unban)
+// Update user status (ban/unban) or admin flag
 router.patch("/approved-users/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -163,7 +163,10 @@ router.patch("/approved-users/:id", async (req, res) => {
       res.status(400).json({ error: "Invalid request body" });
       return;
     }
-    const updated = await db.update(usersTable).set({ status: parsed.data.status, updatedAt: new Date() }).where(eq(usersTable.id, id)).returning();
+    const updates: Partial<typeof usersTable.$inferInsert> = { updatedAt: new Date() };
+    if (parsed.data.status !== undefined) updates.status = parsed.data.status;
+    if (parsed.data.isAdmin !== undefined) updates.isAdmin = parsed.data.isAdmin;
+    const updated = await db.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
     if (!updated.length) {
       res.status(404).json({ error: "User not found" });
       return;
