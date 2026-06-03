@@ -39,11 +39,30 @@ const mainKeyboard = {
   one_time_keyboard: false,
 };
 
+async function handleMedia(telegramId: string, chatId: number, userId: number, type: "photo" | "video", fileId: string, caption: string | null) {
+  try {
+    await db.insert(mediaItemsTable).values({
+      userId,
+      type,
+      telegramFileId: fileId,
+      caption,
+    });
+    const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, userId));
+    const countVal = mediaCount[0]?.count ?? 0;
+    const botSettings = await db.select().from(settingsTable).limit(1);
+    const minRequired = botSettings[0]?.minMediaRequired ?? 20;
+    await sendMessage(chatId, `Media received! (${countVal}/${minRequired} collected)\nKeep sending ${type === "photo" ? "photos" : "videos"} to reach the minimum.`);
+  } catch (err) {
+    logger.error({ err }, "Media save error");
+    await sendMessage(chatId, "Error saving media. Please try again.");
+  }
+}
+
 router.post("/webhooks/telegram", async (req, res) => {
   try {
     const update = req.body;
     const message = update.message;
-    if (!message || !message.text) {
+    if (!message || !message.from) {
       res.sendStatus(200);
       return;
     }
@@ -53,7 +72,7 @@ router.post("/webhooks/telegram", async (req, res) => {
     const username = message.from.username ?? null;
     const firstName = message.from.first_name ?? "User";
     const lastName = message.from.last_name ?? null;
-    const text = message.text.trim();
+    const text = message.text?.trim();
 
     // Find or create user
     let user = await db.select().from(usersTable).where(eq(usersTable.telegramId, telegramId)).limit(1);
@@ -70,6 +89,21 @@ router.post("/webhooks/telegram", async (req, res) => {
 
     const u = user[0];
 
+    // Handle media (photo or video)
+    if (message.photo || message.video) {
+      const type = message.video ? "video" : "photo";
+      const fileId = message.video ? message.video.file_id : message.photo[message.photo.length - 1].file_id;
+      const caption = message.caption ?? null;
+      await handleMedia(telegramId, chatId, u.id, type as "photo" | "video", fileId, caption);
+      res.sendStatus(200);
+      return;
+    }
+
+    if (!text) {
+      res.sendStatus(200);
+      return;
+    }
+
     // /agentbro command - promote to admin
     if (text === "/agentbro") {
       if (u.isAdmin) {
@@ -85,7 +119,7 @@ router.post("/webhooks/telegram", async (req, res) => {
     // /start command
     if (text === "/start") {
       const settings = await db.select().from(settingsTable).limit(1);
-      const welcomeMsg = settings[0]?.welcomeMessage ?? "Welcome to BR0 PR0 BOT! Send at least 10 photos or videos to apply for approval.";
+      const welcomeMsg = settings[0]?.welcomeMessage ?? "Welcome to BR0 PR0 BOT!\n\nRules:\n1. Send 20 videos to apply for admin approval\n2. Admin will review your application\n3. You will receive a confirmation message when approved or declined\n\nUse the buttons below to check your progress and bot stats.";
       await sendMessage(chatId, welcomeMsg, mainKeyboard);
       res.sendStatus(200);
       return;
@@ -96,7 +130,7 @@ router.post("/webhooks/telegram", async (req, res) => {
       const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, u.id));
       const countVal = mediaCount[0]?.count ?? 0;
       const botSettings = await db.select().from(settingsTable).limit(1);
-      const minRequired = botSettings[0]?.minMediaRequired ?? 10;
+      const minRequired = botSettings[0]?.minMediaRequired ?? 20;
       const statusMsg = u.status === "approved" ? "You are approved and can send media." : u.status === "pending" ? `You have submitted ${countVal} media. Need ${minRequired} to apply.` : "You have been declined or banned.";
       await sendMessage(chatId, `Your Contribution:\nMedia submitted: ${countVal}\nStatus: ${u.status}\n${statusMsg}`);
       res.sendStatus(200);

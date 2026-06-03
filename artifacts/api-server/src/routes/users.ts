@@ -1,11 +1,30 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { usersTable, mediaItemsTable } from "@workspace/db";
+import { usersTable, mediaItemsTable, settingsTable } from "@workspace/db";
 import { eq, count } from "drizzle-orm";
 import { UpdateUserBody } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
+
+async function sendTelegramMessage(chatId: string | number, text: string) {
+  if (!BOT_TOKEN) {
+    logger.warn("TELEGRAM_BOT_TOKEN not set, skipping Telegram message");
+    return null;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+    });
+    return await res.json();
+  } catch (err) {
+    logger.error({ err }, "Telegram message error");
+    return null;
+  }
+}
 
 // List pending users with media count
 router.get("/pending-users", async (_req, res) => {
@@ -37,11 +56,20 @@ router.get("/pending-users", async (_req, res) => {
 router.post("/pending-users/:id/approve", async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const user = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+    if (!user.length) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
     const updated = await db.update(usersTable).set({ status: "approved", updatedAt: new Date() }).where(eq(usersTable.id, id)).returning();
     if (!updated.length) {
       res.status(404).json({ error: "User not found" });
       return;
     }
+    // Send confirmation message to user
+    const settings = await db.select().from(settingsTable).limit(1);
+    const msg = settings[0]?.approvalMessage ?? "Congratulations! Your application has been approved. You can now send media to the bot.";
+    await sendTelegramMessage(updated[0].telegramId, `Hi ${updated[0].firstName},\n\n${msg}`);
     res.json({
       id: updated[0].id,
       telegramId: updated[0].telegramId,
@@ -64,11 +92,20 @@ router.post("/pending-users/:id/approve", async (req, res) => {
 router.post("/pending-users/:id/decline", async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const user = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+    if (!user.length) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
     const updated = await db.update(usersTable).set({ status: "declined", updatedAt: new Date() }).where(eq(usersTable.id, id)).returning();
     if (!updated.length) {
       res.status(404).json({ error: "User not found" });
       return;
     }
+    // Send confirmation message to user
+    const settings = await db.select().from(settingsTable).limit(1);
+    const msg = settings[0]?.declineMessage ?? "Your application has been declined. You can try again later.";
+    await sendTelegramMessage(updated[0].telegramId, `Hi ${updated[0].firstName},\n\n${msg}`);
     res.json({
       id: updated[0].id,
       telegramId: updated[0].telegramId,
