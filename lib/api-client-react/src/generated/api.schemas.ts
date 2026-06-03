@@ -47,7 +47,6 @@ export interface PendingUser {
   /** @nullable */
   lastName?: string | null;
   mediaCount: number;
-  isAdmin?: boolean;
   submittedAt: string;
 }
 
@@ -70,7 +69,6 @@ export interface User {
   /** @nullable */
   lastName?: string | null;
   status: UserStatus;
-  isAdmin?: boolean;
   mediaCount?: number;
   createdAt: string;
   updatedAt?: string;
@@ -113,7 +111,6 @@ export interface UserDetail {
   /** @nullable */
   lastName?: string | null;
   status: UserDetailStatus;
-  isAdmin?: boolean;
   mediaCount?: number;
   createdAt: string;
   updatedAt?: string;
