@@ -8,6 +8,7 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 
+// Telegram API helpers
 async function telegramApi(method: string, body: object) {
   if (!BOT_TOKEN) {
     logger.warn("TELEGRAM_BOT_TOKEN not set, skipping Telegram API call");
@@ -26,8 +27,8 @@ async function telegramApi(method: string, body: object) {
   }
 }
 
-async function sendMessage(chatId: number, text: string, replyMarkup?: unknown) {
-  return telegramApi("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: replyMarkup });
+async function sendMessage(chatId: number, text: string, replyMarkup?: unknown, parseMode = "HTML") {
+  return telegramApi("sendMessage", { chat_id: chatId, text, parse_mode: parseMode, reply_markup: replyMarkup });
 }
 
 async function sendPhoto(chatId: number, fileId: string, caption?: string | null) {
@@ -42,6 +43,11 @@ async function sendVideo(chatId: number, fileId: string, caption?: string | null
   return telegramApi("sendVideo", body);
 }
 
+async function deleteMessage(chatId: number, messageId: number) {
+  return telegramApi("deleteMessage", { chat_id: chatId, message_id: messageId });
+}
+
+// Keyboards
 const mainKeyboard = {
   keyboard: [
     [{ text: "My Contribution" }],
@@ -61,9 +67,58 @@ const adminKeyboard = {
   one_time_keyboard: false,
 };
 
+const backKeyboard = {
+  keyboard: [[{ text: "Back to Menu" }]],
+  resize_keyboard: true,
+  one_time_keyboard: false,
+};
+
+// Inline keyboard for admin actions
+function userActionsInline(userId: number, status: string) {
+  const buttons: Array<Array<{ text: string; callback_data: string }>> = [];
+  if (status === "pending") {
+    buttons.push([
+      { text: "Approve", callback_data: `approve_${userId}` },
+      { text: "Decline", callback_data: `decline_${userId}` },
+    ]);
+  }
+  if (status === "approved") {
+    buttons.push([{ text: "Ban User", callback_data: `ban_${userId}` }]);
+  }
+  if (status === "banned") {
+    buttons.push([{ text: "Unban User", callback_data: `unban_${userId}` }]);
+  }
+  return { inline_keyboard: buttons };
+}
+
+// Format helpers
+function formatUser(u: typeof usersTable.$inferSelect, mediaCount: number, minRequired: number) {
+  const statusEmoji = u.status === "approved" ? "✅" : u.status === "pending" ? "⏳" : u.status === "declined" ? "❌" : "🚫";
+  return `<b>${u.firstName} ${u.lastName ?? ""}</b>\n` +
+    `ID: <code>${u.id}</code>\n` +
+    `Status: ${statusEmoji} ${u.status}\n` +
+    `Admin: ${u.isAdmin ? "👑 Yes" : "No"}\n` +
+    `Username: @${u.username ?? "N/A"}\n` +
+    `Media: ${mediaCount}/${minRequired}\n` +
+    `Joined: ${u.createdAt.toLocaleDateString()}`;
+}
+
+// Notify all admins
+async function notifyAdmins(text: string, excludeTelegramId?: string) {
+  try {
+    const admins = await db.select().from(usersTable).where(eq(usersTable.isAdmin, true));
+    for (const admin of admins) {
+      if (excludeTelegramId && admin.telegramId === excludeTelegramId) continue;
+      await sendMessage(Number(admin.telegramId), text);
+    }
+  } catch (err) {
+    logger.error({ err }, "Admin notification error");
+  }
+}
+
+// Media handler
 async function handleMedia(telegramId: string, chatId: number, userId: number, type: "photo" | "video", fileId: string, caption: string | null, isApproved: boolean) {
   try {
-    // Save media to DB
     const inserted = await db.insert(mediaItemsTable).values({
       userId,
       type,
@@ -71,24 +126,29 @@ async function handleMedia(telegramId: string, chatId: number, userId: number, t
       caption,
     }).returning();
     const mediaId = inserted[0]?.id;
+    const botSettings = await db.select().from(settingsTable).limit(1);
+    const minRequired = botSettings[0]?.minMediaRequired ?? 20;
 
     if (!isApproved) {
-      // Pending user: just count toward their minimum
       const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, userId));
       const countVal = mediaCount[0]?.count ?? 0;
-      const botSettings = await db.select().from(settingsTable).limit(1);
-      const minRequired = botSettings[0]?.minMediaRequired ?? 20;
-      await sendMessage(chatId, `Media received! (${countVal}/${minRequired} collected)\nKeep sending ${type === "photo" ? "photos" : "videos"} to reach the minimum.`);
+      await sendMessage(chatId,
+        `✅ <b>Media Saved!</b>\n\n` +
+        `📊 Progress: <b>${countVal}/${minRequired}</b>\n` +
+        `🎯 Need ${Math.max(0, minRequired - countVal)} more to apply for approval.\n\n` +
+        `Keep sending ${type === "photo" ? "photos" : "videos"}!`,
+        mainKeyboard
+      );
       return;
     }
 
-    // Approved user: broadcast to all OTHER approved users
+    // Approved user: broadcast
     const approvedUsers = await db.select().from(usersTable).where(eq(usersTable.status, "approved"));
     let sent = 0;
     let failed = 0;
 
     for (const target of approvedUsers) {
-      if (target.telegramId === telegramId) continue; // skip sender
+      if (target.telegramId === telegramId) continue;
       const targetChatId = Number(target.telegramId);
       try {
         if (type === "photo") {
@@ -103,26 +163,83 @@ async function handleMedia(telegramId: string, chatId: number, userId: number, t
       }
     }
 
-    // Record broadcast
     if (mediaId) {
-      await db.insert(broadcastsTable).values({
-        mediaId,
-        sentCount: sent,
-        failedCount: failed,
-      });
+      await db.insert(broadcastsTable).values({ mediaId, sentCount: sent, failedCount: failed });
     }
 
-    // Confirm to sender
-    await sendMessage(chatId, `Your ${type} has been broadcast to ${sent} approved user${sent === 1 ? "" : "s"}.${failed > 0 ? ` (${failed} failed)` : ""}\nIt has been deleted from your chat.`);
+    await sendMessage(chatId,
+      `🚀 <b>Broadcast Complete!</b>\n\n` +
+      `📤 Sent to <b>${sent}</b> approved user${sent === 1 ? "" : "s"}` +
+      `${failed > 0 ? `\n⚠️ ${failed} failed` : ""}\n\n` +
+      `✨ Your ${type} has been shared with the community!`,
+      mainKeyboard
+    );
   } catch (err) {
     logger.error({ err }, "Media save/broadcast error");
-    await sendMessage(chatId, "Error processing media. Please try again.");
+    await sendMessage(chatId, "❌ Error processing media. Please try again.");
   }
 }
 
+// Webhook handler
 router.post("/webhooks/telegram", async (req, res) => {
   try {
     const update = req.body;
+
+    // Handle callback queries (inline buttons)
+    if (update.callback_query) {
+      const callback = update.callback_query;
+      const chatId = callback.message?.chat?.id;
+      const telegramId = String(callback.from.id);
+      const data = callback.data;
+
+      if (!chatId || !data) { res.sendStatus(200); return; }
+
+      const admin = await db.select().from(usersTable).where(eq(usersTable.telegramId, telegramId)).limit(1);
+      if (!admin.length || !admin[0].isAdmin) {
+        await telegramApi("answerCallbackQuery", { callback_query_id: callback.id, text: "Access denied", show_alert: true });
+        res.sendStatus(200); return;
+      }
+
+      const action = data.split("_")[0];
+      const targetId = Number(data.split("_")[1]);
+
+      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+      if (!target.length) {
+        await telegramApi("answerCallbackQuery", { callback_query_id: callback.id, text: "User not found", show_alert: true });
+        res.sendStatus(200); return;
+      }
+
+      const t = target[0];
+      const settings = await db.select().from(settingsTable).limit(1);
+
+      if (action === "approve") {
+        await db.update(usersTable).set({ status: "approved", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        const msg = settings[0]?.approvalMessage ?? "Congratulations! Your application has been approved.";
+        await sendMessage(Number(t.telegramId), `🎉 <b>Approved!</b>\n\nHi ${t.firstName},\n\n${msg}`);
+        await telegramApi("answerCallbackQuery", { callback_query_id: callback.id, text: `${t.firstName} approved!`, show_alert: true });
+        await notifyAdmins(`✅ <b>Admin Action</b>\n\n${admin[0].firstName} approved ${t.firstName}`, t.telegramId);
+      } else if (action === "decline") {
+        await db.update(usersTable).set({ status: "declined", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        const msg = settings[0]?.declineMessage ?? "Your application has been declined.";
+        await sendMessage(Number(t.telegramId), `❌ <b>Declined</b>\n\nHi ${t.firstName},\n\n${msg}`);
+        await telegramApi("answerCallbackQuery", { callback_query_id: callback.id, text: `${t.firstName} declined.`, show_alert: true });
+        await notifyAdmins(`❌ <b>Admin Action</b>\n\n${admin[0].firstName} declined ${t.firstName}`, t.telegramId);
+      } else if (action === "ban") {
+        await db.update(usersTable).set({ status: "banned", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        await sendMessage(Number(t.telegramId), `🚫 <b>Banned</b>\n\nHi ${t.firstName},\n\nYou have been banned from the bot. Contact an admin if you believe this is a mistake.`);
+        await telegramApi("answerCallbackQuery", { callback_query_id: callback.id, text: `${t.firstName} banned.`, show_alert: true });
+        await notifyAdmins(`🚫 <b>Admin Action</b>\n\n${admin[0].firstName} banned ${t.firstName}`, t.telegramId);
+      } else if (action === "unban") {
+        await db.update(usersTable).set({ status: "approved", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        await sendMessage(Number(t.telegramId), `✅ <b>Unbanned!</b>\n\nHi ${t.firstName},\n\nYou have been unbanned and re-approved. Welcome back!`);
+        await telegramApi("answerCallbackQuery", { callback_query_id: callback.id, text: `${t.firstName} unbanned.`, show_alert: true });
+        await notifyAdmins(`✅ <b>Admin Action</b>\n\n${admin[0].firstName} unbanned ${t.firstName}`, t.telegramId);
+      }
+
+      res.sendStatus(200);
+      return;
+    }
+
     const message = update.message;
     if (!message || !message.from) {
       res.sendStatus(200);
@@ -138,7 +255,8 @@ router.post("/webhooks/telegram", async (req, res) => {
 
     // Find or create user
     let user = await db.select().from(usersTable).where(eq(usersTable.telegramId, telegramId)).limit(1);
-    if (!user.length) {
+    const isNewUser = !user.length;
+    if (isNewUser) {
       const inserted = await db.insert(usersTable).values({
         telegramId,
         username,
@@ -151,13 +269,37 @@ router.post("/webhooks/telegram", async (req, res) => {
 
     const u = user[0];
 
-    // Handle media (photo or video)
+    // Notify admins of new user
+    if (isNewUser) {
+      await notifyAdmins(`🆕 <b>New User!</b>\n\n` +
+        `<b>${firstName}</b> just joined the bot.\n` +
+        `Username: @${username ?? "N/A"}\n` +
+        `ID: <code>${u.id}</code>`, telegramId);
+    }
+
+    // Helper: check admin
+    async function checkAdmin(): Promise<boolean> {
+      if (!u.isAdmin) {
+        await sendMessage(chatId, "🚫 <b>Access Denied</b>\n\nThis command is for admins only.");
+        return false;
+      }
+      return true;
+    }
+
+    // Handle media
     if (message.photo || message.video) {
       const type = message.video ? "video" : "photo";
       const fileId = message.video ? message.video.file_id : message.photo[message.photo.length - 1].file_id;
       const caption = message.caption ?? null;
       const isApproved = u.status === "approved";
       await handleMedia(telegramId, chatId, u.id, type as "photo" | "video", fileId, caption, isApproved);
+
+      // Try to delete the original message from sender
+      try {
+        await deleteMessage(chatId, message.message_id);
+      } catch {
+        // Ignore deletion errors (bot may not have permission)
+      }
       res.sendStatus(200);
       return;
     }
@@ -167,219 +309,345 @@ router.post("/webhooks/telegram", async (req, res) => {
       return;
     }
 
-    // /agentbro command - promote self to admin
-    if (text === "/agentbro") {
-      if (u.isAdmin) {
-        await sendMessage(chatId, "You are already an admin of BR0 PR0 BOT.");
-      } else {
-        await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, u.id));
-        await sendMessage(chatId, `Congratulations ${firstName}! You are now an admin of BR0 PR0 BOT. You can access the admin panel.`);
-      }
-      res.sendStatus(200);
-      return;
-    }
-
-    // /br0 <user_id> - promote another user to admin (admin only)
-    if (text.startsWith("/br0 ")) {
-      if (!(await checkAdmin())) { res.sendStatus(200); return; }
-      const targetId = Number(text.split(" ")[1]);
-      if (!targetId) {
-        await sendMessage(chatId, "Usage: /br0 <user_id>");
-        res.sendStatus(200); return;
-      }
-      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
-      if (!target.length) {
-        await sendMessage(chatId, "User not found.");
-      } else if (target[0].isAdmin) {
-        await sendMessage(chatId, `User ${target[0].firstName} is already an admin.`);
-      } else {
-        await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, targetId));
-        await sendMessage(Number(target[0].telegramId), `Congratulations ${target[0].firstName}! You have been promoted to admin by ${firstName}. You now have full admin powers including:
-\u2022 Approving/declining users
-\u2022 Banning users
-\u2022 Broadcasting to all approved users
-\u2022 Access to the web admin panel`);
-        await sendMessage(chatId, `User ${target[0].firstName} promoted to admin with full powers.`);
-      }
-      res.sendStatus(200);
-      return;
-    }
-
-    // Helper: check admin
-    async function checkAdmin(): Promise<boolean> {
-      if (!u.isAdmin) {
-        await sendMessage(chatId, "Access denied. Admin commands are for admins only.");
-        return false;
-      }
-      return true;
-    }
-
     // /start command
     if (text === "/start") {
       const settings = await db.select().from(settingsTable).limit(1);
-      const welcomeMsg = settings[0]?.welcomeMessage ?? "Welcome to BR0 PR0 BOT!\n\nRules:\n1. Send 20 videos to apply for admin approval\n2. Admin will review your application\n3. You will receive a confirmation message when approved or declined\n\nUse the buttons below to check your progress and bot stats.";
+      const welcomeMsg = settings[0]?.welcomeMessage ??
+        `👋 <b>Welcome to BR0 PR0 BOT!</b>\n\n` +
+        `📋 <b>Rules:</b>\n` +
+        `1. Send <b>20 videos</b> to apply for admin approval\n` +
+        `2. Admin will review your application\n` +
+        `3. You will receive a confirmation when approved or declined\n\n` +
+        `Use the buttons below to check your progress and stats.`;
       const keyboard = u.isAdmin ? adminKeyboard : mainKeyboard;
       await sendMessage(chatId, welcomeMsg, keyboard);
       res.sendStatus(200);
       return;
     }
 
-    // Handle "My Contribution" button
+    // /help command
+    if (text === "/help") {
+      let helpText =
+        `📖 <b>BR0 PR0 BOT Help</b>\n\n` +
+        `<b>User Commands:</b>\n` +
+        `/start - Show welcome message\n` +
+        `/help - Show this help message\n` +
+        `My Contribution - Check your progress\n` +
+        `Stats - View bot statistics\n\n`;
+
+      if (u.isAdmin) {
+        helpText +=
+          `<b>Admin Commands:</b>\n` +
+          `/approve &lt;id&gt; - Approve a pending user\n` +
+          `/decline &lt;id&gt; - Decline a pending user\n` +
+          `/ban &lt;id&gt; - Ban an approved user\n` +
+          `/unban &lt;id&gt; - Unban a banned user\n` +
+          `/br0 &lt;id&gt; - Promote user to admin\n` +
+          `/info &lt;id&gt; - View user details\n` +
+          `/broadcast &lt;msg&gt; - Send message to all approved\n` +
+          `Admin: Users - List pending users\n` +
+          `Admin: Approve - Quick approve list\n` +
+          `Admin: Ban - Quick ban list\n` +
+          `Admin: Broadcast - Broadcast guide`;
+      }
+      await sendMessage(chatId, helpText, u.isAdmin ? adminKeyboard : mainKeyboard);
+      res.sendStatus(200);
+      return;
+    }
+
+    // Back to Menu
+    if (text === "Back to Menu") {
+      const keyboard = u.isAdmin ? adminKeyboard : mainKeyboard;
+      await sendMessage(chatId, "👋 Welcome back! Choose an option:", keyboard);
+      res.sendStatus(200);
+      return;
+    }
+
+    // /agentbro - promote self to admin
+    if (text === "/agentbro") {
+      if (u.isAdmin) {
+        await sendMessage(chatId, "👑 You are already an admin of BR0 PR0 BOT.");
+      } else {
+        await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, u.id));
+        await sendMessage(chatId,
+          `🎉 <b>Congratulations ${firstName}!</b>\n\n` +
+          `You are now an admin of BR0 PR0 BOT.\n` +
+          `Use /help to see all admin commands.`,
+          adminKeyboard
+        );
+        await notifyAdmins(`👑 <b>New Admin!</b>\n\n${firstName} promoted themselves to admin.`, telegramId);
+      }
+      res.sendStatus(200);
+      return;
+    }
+
+    // /br0 <user_id> - promote another user to admin
+    if (text.startsWith("/br0 ")) {
+      if (!(await checkAdmin())) { res.sendStatus(200); return; }
+      const targetId = Number(text.split(" ")[1]);
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/br0 &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
+      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); }
+      else if (target[0].isAdmin) { await sendMessage(chatId, `👑 ${target[0].firstName} is already an admin.`); }
+      else {
+        await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        await sendMessage(Number(target[0].telegramId),
+          `🎉 <b>You have been promoted to Admin!</b>\n\n` +
+          `Promoted by: <b>${firstName}</b>\n\n` +
+          `<b>Your new powers:</b>\n` +
+          `\u2022 Approve/decline users\n` +
+          `\u2022 Ban/unban users\n` +
+          `\u2022 Broadcast to all approved users\n` +
+          `\u2022 Promote others to admin\n` +
+          `\u2022 Access the web admin panel`,
+          adminKeyboard
+        );
+        await sendMessage(chatId, `👑 <b>${target[0].firstName} promoted to admin!</b>`);
+        await notifyAdmins(`👑 <b>New Admin</b>\n\n${firstName} promoted ${target[0].firstName} to admin.`, telegramId);
+      }
+      res.sendStatus(200);
+      return;
+    }
+
+    // My Contribution
     if (text === "My Contribution") {
       const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, u.id));
       const countVal = mediaCount[0]?.count ?? 0;
       const botSettings = await db.select().from(settingsTable).limit(1);
       const minRequired = botSettings[0]?.minMediaRequired ?? 20;
-      const statusMsg = u.status === "approved" ? "You are approved and can send media." : u.status === "pending" ? `You have submitted ${countVal} media. Need ${minRequired} to apply.` : "You have been declined or banned.";
-      await sendMessage(chatId, `Your Contribution:\nMedia submitted: ${countVal}\nStatus: ${u.status}\n${statusMsg}`);
+      const progress = Math.min(100, Math.round((countVal / minRequired) * 100));
+
+      const statusEmoji = u.status === "approved" ? "✅" : u.status === "pending" ? "⏳" : u.status === "declined" ? "❌" : "🚫";
+      const statusText = u.status === "approved" ? "You are approved and can broadcast media!" :
+        u.status === "pending" ? `Submit <b>${minRequired}</b> media items to apply. (${countVal}/${minRequired})` :
+        "You have been declined or banned.";
+
+      await sendMessage(chatId,
+        `📊 <b>My Contribution</b>\n\n` +
+        `📁 Media Submitted: <b>${countVal}</b>\n` +
+        `📈 Progress: <b>${progress}%</b>\n` +
+        `🎯 Minimum Required: <b>${minRequired}</b>\n` +
+        `📋 Status: ${statusEmoji} <b>${u.status}</b>\n\n` +
+        `${statusText}`
+      );
       res.sendStatus(200);
       return;
     }
 
-    // Handle "Stats" button
+    // Stats
     if (text === "Stats") {
       const totalUsers = await db.select({ count: count() }).from(usersTable);
       const approvedUsers = await db.select({ count: count() }).from(usersTable).where(eq(usersTable.status, "approved"));
       const pendingUsers = await db.select({ count: count() }).from(usersTable).where(eq(usersTable.status, "pending"));
+      const declinedUsers = await db.select({ count: count() }).from(usersTable).where(eq(usersTable.status, "declined"));
+      const bannedUsers = await db.select({ count: count() }).from(usersTable).where(eq(usersTable.status, "banned"));
       const totalMedia = await db.select({ count: count() }).from(mediaItemsTable);
       const totalBroadcasts = await db.select({ count: count() }).from(broadcastsTable);
-      await sendMessage(chatId, `Bot Stats:\nTotal Users: ${totalUsers[0]?.count ?? 0}\nApproved: ${approvedUsers[0]?.count ?? 0}\nPending: ${pendingUsers[0]?.count ?? 0}\nTotal Media: ${totalMedia[0]?.count ?? 0}\nBroadcasts: ${totalBroadcasts[0]?.count ?? 0}`);
+
+      await sendMessage(chatId,
+        `📊 <b>Bot Statistics</b>\n\n` +
+        `👥 Total Users: <b>${totalUsers[0]?.count ?? 0}</b>\n` +
+        `✅ Approved: <b>${approvedUsers[0]?.count ?? 0}</b>\n` +
+        `⏳ Pending: <b>${pendingUsers[0]?.count ?? 0}</b>\n` +
+        `❌ Declined: <b>${declinedUsers[0]?.count ?? 0}</b>\n` +
+        `🚫 Banned: <b>${bannedUsers[0]?.count ?? 0}</b>\n` +
+        `📁 Total Media: <b>${totalMedia[0]?.count ?? 0}</b>\n` +
+        `📢 Broadcasts: <b>${totalBroadcasts[0]?.count ?? 0}</b>`
+      );
       res.sendStatus(200);
       return;
     }
 
-    // Admin: Users - list pending users
+    // Admin: Users - list all users with inline actions
     if (text === "Admin: Users") {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
-      const pending = await db.select().from(usersTable).where(eq(usersTable.status, "pending")).orderBy(usersTable.createdAt);
-      if (!pending.length) {
-        await sendMessage(chatId, "No pending users.");
+      const allUsers = await db.select().from(usersTable).orderBy(usersTable.createdAt);
+      if (!allUsers.length) {
+        await sendMessage(chatId, "No users found.");
       } else {
-        const lines = pending.map((p, i) => `${i + 1}. ${p.firstName} (@${p.username ?? "no username"}) - ID: ${p.id}`);
-        await sendMessage(chatId, `Pending Users:\n${lines.join("\n")}\n\nUse /approve <id> or /decline <id>`);
+        await sendMessage(chatId,
+          `👥 <b>All Users (${allUsers.length})</b>\n\n` +
+          allUsers.map(uu => {
+            const emoji = uu.status === "approved" ? "✅" : uu.status === "pending" ? "⏳" : uu.status === "declined" ? "❌" : "🚫";
+            return `${emoji} <b>${uu.firstName}</b> (ID: <code>${uu.id}</code>) - ${uu.status}${uu.isAdmin ? " 👑" : ""}`;
+          }).join("\n") + "\n\nUse /info &lt;id&gt; for details"
+        );
       }
       res.sendStatus(200);
       return;
     }
 
-    // Admin: Approve - show pending for quick approval
+    // Admin: Approve
     if (text === "Admin: Approve") {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
       const pending = await db.select().from(usersTable).where(eq(usersTable.status, "pending")).orderBy(usersTable.createdAt);
       if (!pending.length) {
-        await sendMessage(chatId, "No pending users to approve.");
+        await sendMessage(chatId, "⏳ No pending users to approve.");
       } else {
-        const lines = pending.map((p) => `/approve ${p.id} \u2014 ${p.firstName}`);
-        await sendMessage(chatId, `Click to approve:\n${lines.join("\n")}`);
+        await sendMessage(chatId,
+          `⏳ <b>Pending Users (${pending.length})</b>\n\n` +
+          pending.map(p => `/approve ${p.id} \u2014 ${p.firstName}`).join("\n") + "\n\n" +
+          "Or tap a user below:"
+        );
+        for (const p of pending) {
+          await sendMessage(chatId, formatUser(p, 0, 20), userActionsInline(p.id, p.status));
+        }
       }
       res.sendStatus(200);
       return;
     }
 
-    // Admin: Ban - show approved users for banning
+    // Admin: Ban
     if (text === "Admin: Ban") {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
       const approved = await db.select().from(usersTable).where(eq(usersTable.status, "approved")).orderBy(usersTable.updatedAt);
       if (!approved.length) {
-        await sendMessage(chatId, "No approved users to ban.");
+        await sendMessage(chatId, "✅ No approved users to ban.");
       } else {
-        const lines = approved.map((p) => `/ban ${p.id} \u2014 ${p.firstName}`);
-        await sendMessage(chatId, `Click to ban:\n${lines.join("\n")}`);
+        await sendMessage(chatId,
+          `✅ <b>Approved Users (${approved.length})</b>\n\n` +
+          approved.map(p => `/ban ${p.id} \u2014 ${p.firstName}`).join("\n") + "\n\n" +
+          "Or tap a user below:"
+        );
+        for (const p of approved) {
+          await sendMessage(chatId, formatUser(p, 0, 20), userActionsInline(p.id, p.status));
+        }
       }
       res.sendStatus(200);
       return;
     }
 
-    // /approve <id> command
+    // /info <id>
+    if (text.startsWith("/info ")) {
+      if (!(await checkAdmin())) { res.sendStatus(200); return; }
+      const targetId = Number(text.split(" ")[1]);
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/info &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
+      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); }
+      else {
+        const mediaResult = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, targetId));
+        const botSettings = await db.select().from(settingsTable).limit(1);
+        const minRequired = botSettings[0]?.minMediaRequired ?? 20;
+        await sendMessage(chatId, formatUser(target[0], mediaResult[0]?.count ?? 0, minRequired), userActionsInline(targetId, target[0].status));
+      }
+      res.sendStatus(200);
+      return;
+    }
+
+    // /approve <id>
     if (text.startsWith("/approve ")) {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
       const targetId = Number(text.split(" ")[1]);
-      if (!targetId) {
-        await sendMessage(chatId, "Usage: /approve <user_id>");
-        res.sendStatus(200); return;
-      }
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/approve &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
       const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
-      if (!target.length) {
-        await sendMessage(chatId, "User not found.");
-      } else {
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); }
+      else {
         await db.update(usersTable).set({ status: "approved", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
         const settings = await db.select().from(settingsTable).limit(1);
         const msg = settings[0]?.approvalMessage ?? "Congratulations! Your application has been approved.";
-        await sendMessage(Number(target[0].telegramId), `Hi ${target[0].firstName},\n\n${msg}`);
-        await sendMessage(chatId, `User ${target[0].firstName} approved.`);
+        await sendMessage(Number(target[0].telegramId), `🎉 <b>Approved!</b>\n\nHi ${target[0].firstName},\n\n${msg}`);
+        await sendMessage(chatId, `✅ <b>${target[0].firstName}</b> has been approved.`);
+        await notifyAdmins(`✅ <b>Admin Action</b>\n\n${firstName} approved ${target[0].firstName}`, target[0].telegramId);
       }
       res.sendStatus(200);
       return;
     }
 
-    // /decline <id> command
+    // /decline <id>
     if (text.startsWith("/decline ")) {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
       const targetId = Number(text.split(" ")[1]);
-      if (!targetId) {
-        await sendMessage(chatId, "Usage: /decline <user_id>");
-        res.sendStatus(200); return;
-      }
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/decline &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
       const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
-      if (!target.length) {
-        await sendMessage(chatId, "User not found.");
-      } else {
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); }
+      else {
         await db.update(usersTable).set({ status: "declined", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
         const settings = await db.select().from(settingsTable).limit(1);
         const msg = settings[0]?.declineMessage ?? "Your application has been declined.";
-        await sendMessage(Number(target[0].telegramId), `Hi ${target[0].firstName},\n\n${msg}`);
-        await sendMessage(chatId, `User ${target[0].firstName} declined.`);
+        await sendMessage(Number(target[0].telegramId), `❌ <b>Declined</b>\n\nHi ${target[0].firstName},\n\n${msg}`);
+        await sendMessage(chatId, `❌ <b>${target[0].firstName}</b> has been declined.`);
+        await notifyAdmins(`❌ <b>Admin Action</b>\n\n${firstName} declined ${target[0].firstName}`, target[0].telegramId);
       }
       res.sendStatus(200);
       return;
     }
 
-    // /ban <id> command
+    // /ban <id>
     if (text.startsWith("/ban ")) {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
       const targetId = Number(text.split(" ")[1]);
-      if (!targetId) {
-        await sendMessage(chatId, "Usage: /ban <user_id>");
-        res.sendStatus(200); return;
-      }
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/ban &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
       const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
-      if (!target.length) {
-        await sendMessage(chatId, "User not found.");
-      } else {
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); }
+      else {
         await db.update(usersTable).set({ status: "banned", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
-        await sendMessage(chatId, `User ${target[0].firstName} banned.`);
+        await sendMessage(Number(target[0].telegramId), `🚫 <b>Banned</b>\n\nHi ${target[0].firstName},\n\nYou have been banned from the bot. Contact an admin if you believe this is a mistake.`);
+        await sendMessage(chatId, `🚫 <b>${target[0].firstName}</b> has been banned.`);
+        await notifyAdmins(`🚫 <b>Admin Action</b>\n\n${firstName} banned ${target[0].firstName}`, target[0].telegramId);
       }
       res.sendStatus(200);
       return;
     }
 
-    // Admin: Broadcast - send message to all approved users
+    // /unban <id>
+    if (text.startsWith("/unban ")) {
+      if (!(await checkAdmin())) { res.sendStatus(200); return; }
+      const targetId = Number(text.split(" ")[1]);
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/unban &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
+      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); }
+      else {
+        await db.update(usersTable).set({ status: "approved", updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        await sendMessage(Number(target[0].telegramId), `✅ <b>Unbanned!</b>\n\nHi ${target[0].firstName},\n\nYou have been unbanned and re-approved. Welcome back!`);
+        await sendMessage(chatId, `✅ <b>${target[0].firstName}</b> has been unbanned and re-approved.`);
+        await notifyAdmins(`✅ <b>Admin Action</b>\n\n${firstName} unbanned ${target[0].firstName}`, target[0].telegramId);
+      }
+      res.sendStatus(200);
+      return;
+    }
+
+    // Admin: Broadcast guide
     if (text === "Admin: Broadcast") {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
-      await sendMessage(chatId, "To broadcast, reply to this message with:\n/broadcast <your message>\n\nIt will be sent to all approved users.");
+      await sendMessage(chatId,
+        `📢 <b>Broadcast Guide</b>\n\n` +
+        `Send a message to ALL approved users:\n` +
+        `<code>/broadcast Your message here</code>\n\n` +
+        `Or send media directly — it will auto-broadcast!`,
+        backKeyboard
+      );
       res.sendStatus(200);
       return;
     }
 
-    // /broadcast <message> command
+    // /broadcast <message>
     if (text.startsWith("/broadcast ")) {
       if (!(await checkAdmin())) { res.sendStatus(200); return; }
       const broadcastText = text.slice("/broadcast ".length);
-      if (!broadcastText.trim()) {
-        await sendMessage(chatId, "Usage: /broadcast <message>");
-        res.sendStatus(200); return;
-      }
+      if (!broadcastText.trim()) { await sendMessage(chatId, "Usage: <code>/broadcast &lt;message&gt;</code>"); res.sendStatus(200); return; }
+
       const approved = await db.select().from(usersTable).where(eq(usersTable.status, "approved"));
       let sent = 0;
+      let failed = 0;
       for (const target of approved) {
         try {
           await sendMessage(Number(target.telegramId), broadcastText);
           sent++;
-        } catch {
-          // ignore individual failures
-        }
+        } catch { failed++; }
       }
-      await sendMessage(chatId, `Broadcast sent to ${sent} approved users.`);
+      await sendMessage(chatId,
+        `📢 <b>Broadcast Complete!</b>\n\n` +
+        `✅ Sent: <b>${sent}</b>\n` +
+        `${failed > 0 ? `❌ Failed: <b>${failed}</b>\n` : ""}` +
+        `👥 Total Approved: <b>${approved.length}</b>`
+      );
+      await notifyAdmins(`📢 <b>Broadcast Alert</b>\n\n${firstName} broadcast a message to ${sent} approved users.`, telegramId);
       res.sendStatus(200);
       return;
     }

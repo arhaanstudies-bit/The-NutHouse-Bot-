@@ -25,7 +25,7 @@ export default function SettingsPage() {
   const [form, setForm] = useState({
     botName: "",
     adminPassword: "",
-    minMediaRequired: 10,
+    minMediaRequired: 20,
     welcomeMessage: "",
     approvalMessage: "",
     declineMessage: "",
