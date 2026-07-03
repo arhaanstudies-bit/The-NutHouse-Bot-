@@ -1,0 +1,1 @@
+- [pnpm overrides precedence](pnpm-overrides-precedence.md) — root package.json `pnpm.overrides` fully replaces (not merges with) pnpm-workspace.yaml's `overrides:` section.
