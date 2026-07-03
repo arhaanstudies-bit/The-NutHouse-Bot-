@@ -119,6 +119,68 @@ async function notifyAdmins(text: string, excludeTelegramId?: string) {
 // Media handler
 async function handleMedia(telegramId: string, chatId: number, userId: number, type: "photo" | "video", fileId: string, caption: string | null, isApproved: boolean) {
   try {
+    const botSettings = await db.select().from(settingsTable).limit(1);
+    const minRequired = botSettings[0]?.minMediaRequired ?? 20;
+
+    if (!isApproved) {
+      // Pending user: ONLY videos count toward minimum
+      if (type === "photo") {
+        await sendMessage(chatId,
+          `❌ <b>Photos Not Accepted!</b>\n\n` +
+          `You must send <b>VIDEOS ONLY</b> to qualify for admin approval.\n` +
+          `Please send 20 videos to apply.`,
+          mainKeyboard
+        );
+        return;
+      }
+
+      // Save video
+      await db.insert(mediaItemsTable).values({
+        userId,
+        type: "video",
+        telegramFileId: fileId,
+        caption,
+      });
+
+      // Count only videos for this user
+      const videoCount = await db.select({ count: count() }).from(mediaItemsTable)
+        .where(eq(mediaItemsTable.userId, userId));
+      const countVal = videoCount[0]?.count ?? 0;
+      const remaining = Math.max(0, minRequired - countVal);
+
+      if (remaining === 0) {
+        // User has submitted enough videos! Notify admins for review
+        await sendMessage(chatId,
+          `🎉 <b>All 20 Videos Submitted!</b>\n\n` +
+          `⏳ Your application is now <b>PENDING REVIEW</b>.\n` +
+          `Admin will review your videos and approve or decline.\n` +
+          `You will receive a confirmation message soon.`,
+          mainKeyboard
+        );
+
+        // Notify all admins
+        await notifyAdmins(
+          `🆕 <b>New Application Ready for Review!</b>\n\n` +
+          `User: <b>${(await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1))[0]?.firstName}</b>\n` +
+          `ID: <code>${userId}</code>\n` +
+          `Videos: <b>${countVal}/${minRequired}</b>\n\n` +
+          `Tap to review videos: <code>/review ${userId}</code>\n` +
+          `Or use Admin: Approve in the menu.`,
+          telegramId
+        );
+      } else {
+        await sendMessage(chatId,
+          `✅ <b>Video Saved!</b>\n\n` +
+          `📊 Progress: <b>${countVal}/${minRequired}</b>\n` +
+          `🎯 Need <b>${remaining}</b> more video${remaining === 1 ? "" : "s"} to qualify.\n\n` +
+          `Send more videos! Only videos count.`,
+          mainKeyboard
+        );
+      }
+      return;
+    }
+
+    // Approved user: save and broadcast to all other approved users
     const inserted = await db.insert(mediaItemsTable).values({
       userId,
       type,
@@ -126,23 +188,7 @@ async function handleMedia(telegramId: string, chatId: number, userId: number, t
       caption,
     }).returning();
     const mediaId = inserted[0]?.id;
-    const botSettings = await db.select().from(settingsTable).limit(1);
-    const minRequired = botSettings[0]?.minMediaRequired ?? 20;
 
-    if (!isApproved) {
-      const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, userId));
-      const countVal = mediaCount[0]?.count ?? 0;
-      await sendMessage(chatId,
-        `✅ <b>Media Saved!</b>\n\n` +
-        `📊 Progress: <b>${countVal}/${minRequired}</b>\n` +
-        `🎯 Need ${Math.max(0, minRequired - countVal)} more to apply for approval.\n\n` +
-        `Keep sending ${type === "photo" ? "photos" : "videos"}!`,
-        mainKeyboard
-      );
-      return;
-    }
-
-    // Approved user: broadcast
     const approvedUsers = await db.select().from(usersTable).where(eq(usersTable.status, "approved"));
     let sent = 0;
     let failed = 0;
@@ -313,12 +359,13 @@ router.post("/webhooks/telegram", async (req, res) => {
     if (text === "/start") {
       const settings = await db.select().from(settingsTable).limit(1);
       const welcomeMsg = settings[0]?.welcomeMessage ??
-        `👋 <b>Welcome to BR0 PR0 BOT!</b>\n\n` +
-        `📋 <b>Rules:</b>\n` +
-        `1. Send <b>20 videos</b> to apply for admin approval\n` +
-        `2. Admin will review your application\n` +
-        `3. You will receive a confirmation when approved or declined\n\n` +
-        `Use the buttons below to check your progress and stats.`;
+        `👋 <b>Welcome to BRO X BOT!</b>\n\n` +
+        `📋 <b>MANDATORY RULES:</b>\n` +
+        `1. You MUST send <b>20 VIDEOS</b> to qualify for admin approval\n` +
+        `2. Photos are NOT accepted for approval\n` +
+        `3. Admin will REVIEW your videos before approval\n` +
+        `4. You will receive a confirmation when approved or declined\n\n` +
+        `Use the buttons below to check your progress.`;
       const keyboard = u.isAdmin ? adminKeyboard : mainKeyboard;
       await sendMessage(chatId, welcomeMsg, keyboard);
       res.sendStatus(200);
@@ -328,7 +375,7 @@ router.post("/webhooks/telegram", async (req, res) => {
     // /help command
     if (text === "/help") {
       let helpText =
-        `📖 <b>BR0 PR0 BOT Help</b>\n\n` +
+        `📖 <b>BRO X BOT Help</b>\n\n` +
         `<b>User Commands:</b>\n` +
         `/start - Show welcome message\n` +
         `/help - Show this help message\n` +
@@ -340,6 +387,7 @@ router.post("/webhooks/telegram", async (req, res) => {
           `<b>Admin Commands:</b>\n` +
           `/approve &lt;id&gt; - Approve a pending user\n` +
           `/decline &lt;id&gt; - Decline a pending user\n` +
+          `/review &lt;id&gt; - View user's submitted videos\n` +
           `/ban &lt;id&gt; - Ban an approved user\n` +
           `/unban &lt;id&gt; - Unban a banned user\n` +
           `/br0 &lt;id&gt; - Promote user to admin\n` +
@@ -366,12 +414,12 @@ router.post("/webhooks/telegram", async (req, res) => {
     // /agentbro - promote self to admin
     if (text === "/agentbro") {
       if (u.isAdmin) {
-        await sendMessage(chatId, "👑 You are already an admin of BR0 PR0 BOT.");
+        await sendMessage(chatId, "👑 You are already an admin of BRO X BOT.");
       } else {
         await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, u.id));
         await sendMessage(chatId,
           `🎉 <b>Congratulations ${firstName}!</b>\n\n` +
-          `You are now an admin of BR0 PR0 BOT.\n` +
+          `You are now an admin of BRO X BOT.\n` +
           `Use /help to see all admin commands.`,
           adminKeyboard
         );
@@ -423,13 +471,17 @@ router.post("/webhooks/telegram", async (req, res) => {
         u.status === "pending" ? `Submit <b>${minRequired}</b> media items to apply. (${countVal}/${minRequired})` :
         "You have been declined or banned.";
 
+      const videoOnlyNote = u.status === "pending"
+        ? `\n\n🚨 <b>VIDEOS ONLY</b> - Photos are not accepted for approval.`
+        : "";
+
       await sendMessage(chatId,
         `📊 <b>My Contribution</b>\n\n` +
-        `📁 Media Submitted: <b>${countVal}</b>\n` +
+        `🎬 Videos Submitted: <b>${countVal}</b>\n` +
         `📈 Progress: <b>${progress}%</b>\n` +
-        `🎯 Minimum Required: <b>${minRequired}</b>\n` +
+        `🎯 Minimum Required: <b>${minRequired} VIDEOS</b>\n` +
         `📋 Status: ${statusEmoji} <b>${u.status}</b>\n\n` +
-        `${statusText}`
+        `${statusText}${videoOnlyNote}`
       );
       res.sendStatus(200);
       return;
@@ -531,6 +583,41 @@ router.post("/webhooks/telegram", async (req, res) => {
         const botSettings = await db.select().from(settingsTable).limit(1);
         const minRequired = botSettings[0]?.minMediaRequired ?? 20;
         await sendMessage(chatId, formatUser(target[0], mediaResult[0]?.count ?? 0, minRequired), userActionsInline(targetId, target[0].status));
+      }
+      res.sendStatus(200);
+      return;
+    }
+
+    // /review <id> - view user's submitted videos
+    if (text.startsWith("/review ")) {
+      if (!(await checkAdmin())) { res.sendStatus(200); return; }
+      const targetId = Number(text.split(" ")[1]);
+      if (!targetId) { await sendMessage(chatId, "Usage: <code>/review &lt;user_id&gt;</code>"); res.sendStatus(200); return; }
+
+      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+      if (!target.length) { await sendMessage(chatId, "❌ User not found."); res.sendStatus(200); return; }
+
+      const t = target[0];
+      const media = await db.select().from(mediaItemsTable)
+        .where(eq(mediaItemsTable.userId, targetId))
+        .orderBy(mediaItemsTable.createdAt);
+      const videoMedia = media.filter(m => m.type === "video");
+
+      if (!videoMedia.length) {
+        await sendMessage(chatId, `❌ <b>${t.firstName}</b> has not submitted any videos yet.`, userActionsInline(targetId, t.status));
+      } else {
+        await sendMessage(chatId,
+          `🎬 <b>Review: ${t.firstName}</b>\n\n` +
+          `Submitted <b>${videoMedia.length}</b> video${videoMedia.length === 1 ? "" : "s"}\n` +
+          `Status: ${t.status === "pending" ? "⏳ PENDING REVIEW" : t.status === "approved" ? "✅ Approved" : "❌ Declined"}\n\n` +
+          `Sending videos now...`,
+          userActionsInline(targetId, t.status)
+        );
+
+        // Send all videos to admin for review
+        for (const m of videoMedia) {
+          await sendVideo(chatId, m.telegramFileId, m.caption ?? `Video from ${t.firstName}`);
+        }
       }
       res.sendStatus(200);
       return;

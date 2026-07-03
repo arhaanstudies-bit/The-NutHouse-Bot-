@@ -3,10 +3,10 @@ import { z } from "zod";
 
 export const settingsTable = pgTable("settings", {
   id: serial("id").primaryKey(),
-  botName: varchar("bot_name", { length: 256 }).notNull().default("BR0 PR0 BOT"),
+  botName: varchar("bot_name", { length: 256 }).notNull().default("BRO X BOT"),
   adminPassword: varchar("admin_password", { length: 256 }),
   minMediaRequired: integer("min_media_required").notNull().default(20),
-  welcomeMessage: text("welcome_message").default("Welcome to BR0 PR0 BOT!\n\nRules:\n1. Send 20 videos to apply for admin approval\n2. Admin will review your application\n3. You will receive a confirmation message when approved or declined\n\nUse the buttons below to check your progress and bot stats."),
+  welcomeMessage: text("welcome_message").default("🎬 Welcome to BRO X BOT!\n\n📋 MANDATORY RULES:\n1. You MUST send 20 VIDEOS to qualify for admin approval\n2. Photos are NOT accepted for approval\n3. Admin will REVIEW your videos before approval\n4. You will receive a confirmation when approved or declined\n\nUse the buttons below to check your progress."),
   approvalMessage: text("approval_message"),
   declineMessage: text("decline_message"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

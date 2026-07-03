@@ -103,7 +103,7 @@ export default function SettingsPage() {
                 id="botName"
                 value={form.botName}
                 onChange={(e) => setForm({ ...form, botName: e.target.value })}
-                placeholder="BR0 PR0 BOT"
+                placeholder="BRO X BOT"
               />
             </div>
             <div className="space-y-2">
