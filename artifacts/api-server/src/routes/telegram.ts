@@ -167,13 +167,39 @@ router.post("/webhooks/telegram", async (req, res) => {
       return;
     }
 
-    // /agentbro command - promote to admin
+    // /agentbro command - promote self to admin
     if (text === "/agentbro") {
       if (u.isAdmin) {
         await sendMessage(chatId, "You are already an admin of BR0 PR0 BOT.");
       } else {
         await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, u.id));
         await sendMessage(chatId, `Congratulations ${firstName}! You are now an admin of BR0 PR0 BOT. You can access the admin panel.`);
+      }
+      res.sendStatus(200);
+      return;
+    }
+
+    // /br0 <user_id> - promote another user to admin (admin only)
+    if (text.startsWith("/br0 ")) {
+      if (!(await checkAdmin())) { res.sendStatus(200); return; }
+      const targetId = Number(text.split(" ")[1]);
+      if (!targetId) {
+        await sendMessage(chatId, "Usage: /br0 <user_id>");
+        res.sendStatus(200); return;
+      }
+      const target = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+      if (!target.length) {
+        await sendMessage(chatId, "User not found.");
+      } else if (target[0].isAdmin) {
+        await sendMessage(chatId, `User ${target[0].firstName} is already an admin.`);
+      } else {
+        await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, targetId));
+        await sendMessage(Number(target[0].telegramId), `Congratulations ${target[0].firstName}! You have been promoted to admin by ${firstName}. You now have full admin powers including:
+\u2022 Approving/declining users
+\u2022 Banning users
+\u2022 Broadcasting to all approved users
+\u2022 Access to the web admin panel`);
+        await sendMessage(chatId, `User ${target[0].firstName} promoted to admin with full powers.`);
       }
       res.sendStatus(200);
       return;
