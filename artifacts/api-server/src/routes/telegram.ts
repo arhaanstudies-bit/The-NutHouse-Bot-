@@ -30,6 +30,18 @@ async function sendMessage(chatId: number, text: string, replyMarkup?: unknown) 
   return telegramApi("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: replyMarkup });
 }
 
+async function sendPhoto(chatId: number, fileId: string, caption?: string | null) {
+  const body: Record<string, unknown> = { chat_id: chatId, photo: fileId };
+  if (caption) body.caption = caption;
+  return telegramApi("sendPhoto", body);
+}
+
+async function sendVideo(chatId: number, fileId: string, caption?: string | null) {
+  const body: Record<string, unknown> = { chat_id: chatId, video: fileId };
+  if (caption) body.caption = caption;
+  return telegramApi("sendVideo", body);
+}
+
 const mainKeyboard = {
   keyboard: [
     [{ text: "My Contribution" }],
@@ -39,22 +51,62 @@ const mainKeyboard = {
   one_time_keyboard: false,
 };
 
-async function handleMedia(telegramId: string, chatId: number, userId: number, type: "photo" | "video", fileId: string, caption: string | null) {
+async function handleMedia(telegramId: string, chatId: number, userId: number, type: "photo" | "video", fileId: string, caption: string | null, isApproved: boolean) {
   try {
-    await db.insert(mediaItemsTable).values({
+    // Save media to DB
+    const inserted = await db.insert(mediaItemsTable).values({
       userId,
       type,
       telegramFileId: fileId,
       caption,
-    });
-    const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, userId));
-    const countVal = mediaCount[0]?.count ?? 0;
-    const botSettings = await db.select().from(settingsTable).limit(1);
-    const minRequired = botSettings[0]?.minMediaRequired ?? 20;
-    await sendMessage(chatId, `Media received! (${countVal}/${minRequired} collected)\nKeep sending ${type === "photo" ? "photos" : "videos"} to reach the minimum.`);
+    }).returning();
+    const mediaId = inserted[0]?.id;
+
+    if (!isApproved) {
+      // Pending user: just count toward their minimum
+      const mediaCount = await db.select({ count: count() }).from(mediaItemsTable).where(eq(mediaItemsTable.userId, userId));
+      const countVal = mediaCount[0]?.count ?? 0;
+      const botSettings = await db.select().from(settingsTable).limit(1);
+      const minRequired = botSettings[0]?.minMediaRequired ?? 20;
+      await sendMessage(chatId, `Media received! (${countVal}/${minRequired} collected)\nKeep sending ${type === "photo" ? "photos" : "videos"} to reach the minimum.`);
+      return;
+    }
+
+    // Approved user: broadcast to all OTHER approved users
+    const approvedUsers = await db.select().from(usersTable).where(eq(usersTable.status, "approved"));
+    let sent = 0;
+    let failed = 0;
+
+    for (const target of approvedUsers) {
+      if (target.telegramId === telegramId) continue; // skip sender
+      const targetChatId = Number(target.telegramId);
+      try {
+        if (type === "photo") {
+          await sendPhoto(targetChatId, fileId, caption);
+        } else {
+          await sendVideo(targetChatId, fileId, caption);
+        }
+        sent++;
+      } catch (err) {
+        failed++;
+        logger.error({ err, targetUserId: target.id }, "Broadcast send error");
+      }
+    }
+
+    // Record broadcast
+    if (mediaId) {
+      await db.insert(broadcastsTable).values({
+        mediaId,
+        sentCount: sent,
+        failedCount: failed,
+      });
+    }
+
+    // Confirm to sender
+    await sendMessage(chatId, `Your ${type} has been broadcast to ${sent} approved user${sent === 1 ? "" : "s"}.${failed > 0 ? ` (${failed} failed)` : ""}\nIt has been deleted from your chat.`);
   } catch (err) {
-    logger.error({ err }, "Media save error");
-    await sendMessage(chatId, "Error saving media. Please try again.");
+    logger.error({ err }, "Media save/broadcast error");
+    await sendMessage(chatId, "Error processing media. Please try again.");
   }
 }
 
@@ -94,7 +146,8 @@ router.post("/webhooks/telegram", async (req, res) => {
       const type = message.video ? "video" : "photo";
       const fileId = message.video ? message.video.file_id : message.photo[message.photo.length - 1].file_id;
       const caption = message.caption ?? null;
-      await handleMedia(telegramId, chatId, u.id, type as "photo" | "video", fileId, caption);
+      const isApproved = u.status === "approved";
+      await handleMedia(telegramId, chatId, u.id, type as "photo" | "video", fileId, caption, isApproved);
       res.sendStatus(200);
       return;
     }
