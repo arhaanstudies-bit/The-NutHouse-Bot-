@@ -1,6 +1,6 @@
 kind = "web"
 previewPath = "/"
-title = "BR0 PR0 BOT Admin Panel"
+title = "The NutHous ⚡ Admin Panel"
 version = "1.0.0"
 id = "artifacts/admin-panel"
 router = "path"

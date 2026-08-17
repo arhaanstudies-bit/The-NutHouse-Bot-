@@ -359,7 +359,7 @@ router.post("/webhooks/telegram", async (req, res) => {
     if (text === "/start") {
       const settings = await db.select().from(settingsTable).limit(1);
       const welcomeMsg = settings[0]?.welcomeMessage ??
-        `👋 <b>Welcome to BRO X BOT!</b>\n\n` +
+        `👋 <b>Welcome to The NutHous ⚡!</b>\n\n` +
         `📋 <b>MANDATORY RULES:</b>\n` +
         `1. You MUST send <b>20 VIDEOS</b> to qualify for admin approval\n` +
         `2. Photos are NOT accepted for approval\n` +
@@ -375,7 +375,7 @@ router.post("/webhooks/telegram", async (req, res) => {
     // /help command
     if (text === "/help") {
       let helpText =
-        `📖 <b>BRO X BOT Help</b>\n\n` +
+         `📖 <b>The NutHous ⚡ Help</b>\n\n` +
         `<b>User Commands:</b>\n` +
         `/start - Show welcome message\n` +
         `/help - Show this help message\n` +
@@ -414,12 +414,12 @@ router.post("/webhooks/telegram", async (req, res) => {
     // /agentbro - promote self to admin
     if (text === "/agentbro") {
       if (u.isAdmin) {
-        await sendMessage(chatId, "👑 You are already an admin of BRO X BOT.");
+        await sendMessage(chatId, "👑 You are already an admin of The NutHous ⚡.");
       } else {
         await db.update(usersTable).set({ isAdmin: true, updatedAt: new Date() }).where(eq(usersTable.id, u.id));
         await sendMessage(chatId,
           `🎉 <b>Congratulations ${firstName}!</b>\n\n` +
-          `You are now an admin of BRO X BOT.\n` +
+          `You are now an admin of The NutHous ⚡.\n` +
           `Use /help to see all admin commands.`,
           adminKeyboard
         );

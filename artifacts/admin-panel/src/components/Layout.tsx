@@ -32,7 +32,7 @@ export function Sidebar() {
         <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
           <Bot className="h-6 w-6 text-primary" />
           <span className="text-sm font-bold tracking-wide text-sidebar-foreground">
-            BRO X BOT
+            The NutHous ⚡
           </span>
         </div>
         <nav className="flex-1 space-y-1 px-3 py-4">
